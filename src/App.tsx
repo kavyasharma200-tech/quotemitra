@@ -1,6 +1,9 @@
-import { useEffect, useState } from 'react';
-import type { AppState, View } from './types';
-import { loadState, saveState } from './lib/store';
+// QuoteMitra app shell. DbProvider owns all data (API with localStorage
+// fallback); this file owns view routing.
+
+import { useState } from 'react';
+import type { View } from './types';
+import { DbProvider, useDb } from './lib/db';
 import { Sidebar } from './components/Sidebar';
 import { Landing } from './views/Landing';
 import { Dashboard } from './views/Dashboard';
@@ -9,35 +12,49 @@ import { Quotes } from './views/Quotes';
 import { Lanes } from './views/Lanes';
 import { Settings } from './views/Settings';
 
-export default function App() {
-  const [state, setState] = useState<AppState>(() => loadState());
+function Shell() {
+  const { db, online } = useDb();
   const [view, setView] = useState<View>('landing');
 
-  useEffect(() => {
-    saveState(state);
-  }, [state]);
-
-  const pendingCount = state.enquiries.filter((e) => e.status === 'new').length;
+  if (!db) {
+    return (
+      <div className="boot">
+        <p className="kicker">QuoteMitra</p>
+        <p className="muted">Opening your quoting desk…</p>
+      </div>
+    );
+  }
 
   if (view === 'landing') {
     return <Landing onEnter={() => setView('dashboard')} />;
   }
+
+  const pendingCount = db.enquiries.filter((e) => e.status === 'new').length;
 
   return (
     <div className="app-shell">
       <Sidebar
         view={view}
         onNav={setView}
-        brokerName={state.broker.name}
+        brokerName={db.settings.name}
+        company={db.settings.company}
         pendingCount={pendingCount}
       />
-      <main className="main">
-        {view === 'dashboard' && <Dashboard state={state} onNav={setView} />}
-        {view === 'inbox' && <Inbox state={state} onChange={setState} />}
-        {view === 'quotes' && <Quotes state={state} onChange={setState} />}
-        {view === 'lanes' && <Lanes state={state} onChange={setState} />}
-        {view === 'settings' && <Settings state={state} onChange={setState} />}
+      <main className="main" key={`${view}-${online === true ? 'live' : 'demo'}`}>
+        {view === 'dashboard' && <Dashboard db={db} onNav={setView} />}
+        {view === 'inbox' && <Inbox db={db} />}
+        {view === 'quotes' && <Quotes db={db} />}
+        {view === 'lanes' && <Lanes db={db} />}
+        {view === 'settings' && <Settings db={db} />}
       </main>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <DbProvider>
+      <Shell />
+    </DbProvider>
   );
 }

@@ -1,36 +1,47 @@
-// localStorage persistence. Single JSON blob; seed on first run.
+// localStorage fallback store — the demo safety net.
+//
+// When the API is unreachable, the whole app runs against this store so the
+// demo never breaks. Shapes match src/types.ts exactly.
 
-import type { AppState } from '../types';
-import { seedState } from '../data/seed';
+import type { DbData } from '../types';
+import { seedDb } from '../data/seed';
 
-const KEY = 'quotemitra-state-v1';
+const KEY = 'quotemitra-db-v2';
 
-export function loadState(): AppState {
+export function loadLocal(): DbData {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as AppState;
-      if (parsed && parsed.broker && Array.isArray(parsed.lanes)) return parsed;
+      const parsed = JSON.parse(raw) as DbData;
+      if (
+        parsed &&
+        parsed.settings &&
+        Array.isArray(parsed.lanes) &&
+        Array.isArray(parsed.enquiries) &&
+        Array.isArray(parsed.quotes)
+      ) {
+        return parsed;
+      }
     }
   } catch {
     // fall through to seed
   }
-  const seeded = seedState();
-  saveState(seeded);
+  const seeded = seedDb();
+  saveLocal(seeded);
   return seeded;
 }
 
-export function saveState(state: AppState): void {
+export function saveLocal(db: DbData): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(state));
+    localStorage.setItem(KEY, JSON.stringify(db));
   } catch {
-    // storage full / private mode — app still works in-memory for the session
+    // storage full / private mode — the app keeps working in-memory
   }
 }
 
-export function resetState(): AppState {
-  const seeded = seedState();
-  saveState(seeded);
+export function resetLocal(): DbData {
+  const seeded = seedDb();
+  saveLocal(seeded);
   return seeded;
 }
 

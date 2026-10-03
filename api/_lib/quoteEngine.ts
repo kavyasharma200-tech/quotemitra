@@ -1,14 +1,26 @@
-// Quote engine: pure, transparent freight-rate math.
-// Mirrors api/_lib/quoteEngine.ts exactly — used as the LOCAL fallback when
-// POST /api/quotes/draft is unreachable, so demo quotes match server quotes.
+// Server port of the QuoteMitra pricing engine.
+// Logic mirrors src/lib/quoteEngine.ts exactly so quotes drafted by the
+// WhatsApp webhook match quotes drafted in the dashboard.
+//
+// Pricing model (see PLAN.md §6):
+//   trip cost = diesel(distance / mileage × price) + toll
+//             + driver bata (800 / 1200 / 1800 by distance) + labour
+//   history blend: weighted avg of last 5 quotes, drifted +2.6% per ₹5/L
+//                  diesel move vs the ₹92/L anchor
+//   final = (50% history-adjusted + 50% cost-plus) × urgency
+//           (1.0 / 1.1 / 1.15), rounded to ₹50
+//   no history → cost-plus × 1.05 safety factor
+//
+// NOTE: weight_tons is stored for reference; pricing is per full truck
+// trip (a broker quotes the whole vehicle, not per-tonne, in this segment).
 
 import type {
+  BrokerSettings,
   CostBreakdown,
   Lane,
-  LocalQuote,
   Quote,
   Urgency,
-} from '../types';
+} from './types.js';
 
 export const URGENCY_MULTIPLIERS: Record<Urgency, number> = {
   standard: 1.0,
@@ -25,7 +37,9 @@ export const URGENCY_LABELS: Record<Urgency, string> = {
 // CRISIL estimate: every ₹5/L diesel rise needs +2.5–2.8% on freight rates
 // to preserve margins. Used to drift historical lane rates with fuel price.
 const DIESEL_DRIFT_PER_5RS = 0.026;
-const DIESEL_ANCHOR = 92; // ₹/L — reference price the seed rates were logged at
+
+// ₹/L — reference price the seed/market rates were anchored to.
+const DIESEL_ANCHOR = 92;
 
 export function roundTo50(n: number): number {
   return Math.round(n / 50) * 50;
@@ -66,8 +80,7 @@ export interface EngineInputs {
 export function computeQuote(inputs: EngineInputs): CostBreakdown {
   const { lane, dieselPrice, marginPct, urgency, pastRates } = inputs;
 
-  const mileage =
-    lane.mileageKmpl > 0 ? lane.mileageKmpl : defaultMileageFor(lane.vehicleType);
+  const mileage = lane.mileageKmpl > 0 ? lane.mileageKmpl : defaultMileageFor(lane.vehicleType);
   const fuel = (lane.distanceKm / mileage) * dieselPrice;
   const toll = lane.tollRs;
   const driverBata = driverBataFor(lane.distanceKm);
@@ -112,41 +125,7 @@ export function computeQuote(inputs: EngineInputs): CostBreakdown {
   };
 }
 
-/** Build a local draft Quote (status 'draft') — mirrors the server's
- *  draftQuote() so the demo behaves identically when offline. */
-export function draftQuoteLocal(args: {
-  lane: Lane;
-  dieselPrice: number;
-  marginPct: number;
-  urgency: Urgency;
-  pastRates: number[];
-  weightTons?: number | null;
-  enquiryId?: string | null;
-}): LocalQuote {
-  const breakdown = computeQuote({
-    lane: args.lane,
-    dieselPrice: args.dieselPrice,
-    marginPct: args.marginPct,
-    urgency: args.urgency,
-    pastRates: args.pastRates,
-  });
-  const now = new Date().toISOString();
-  return {
-    id: `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
-    laneId: args.lane.id,
-    enquiryId: args.enquiryId ?? null,
-    weightTons: args.weightTons ?? null,
-    urgency: args.urgency,
-    rateRs: breakdown.finalRate,
-    marginRs: breakdown.marginRs,
-    breakdown,
-    status: 'draft',
-    createdAt: now,
-    sentAt: null,
-  };
-}
-
-/** Find the best matching lane for an origin→destination pair. */
+/** Best matching lane for an origin→destination pair (exact, case-insensitive). */
 export function findLane(
   lanes: Lane[],
   origin?: string,
@@ -156,8 +135,24 @@ export function findLane(
   const o = origin.trim().toLowerCase();
   const d = destination.trim().toLowerCase();
   return lanes.find(
-    (l) => l.origin.toLowerCase() === o && l.destination.toLowerCase() === d,
+    (l) =>
+      l.origin.toLowerCase() === o && l.destination.toLowerCase() === d,
   );
+}
+
+/** Heuristic lane match from free text: lane whose origin AND destination
+ *  both appear as substrings in the message. Returns undefined when
+ *  zero or more than one lane matches (ambiguous). */
+export function findLaneInText(lanes: Lane[], text: string): Lane | undefined {
+  const t = text.toLowerCase();
+  const matches = lanes.filter(
+    (l) =>
+      l.origin.trim().length > 1 &&
+      l.destination.trim().length > 1 &&
+      t.includes(l.origin.trim().toLowerCase()) &&
+      t.includes(l.destination.trim().toLowerCase()),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 /** Past quoted rates for a lane, most recent first — used as history. */
@@ -172,11 +167,45 @@ export function formatINR(n: number): string {
   return '₹' + Math.round(n).toLocaleString('en-IN');
 }
 
-/** Indian-style mobile display for a wa_id like "919835122014". */
-export function formatWa(waFrom: string): string {
-  const digits = waFrom.replace(/\D/g, '');
-  if (digits.length === 12 && digits.startsWith('91')) {
-    return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
-  }
-  return waFrom.startsWith('+') ? waFrom : `+${waFrom}`;
+export interface DraftInputs {
+  lane: Lane;
+  broker: BrokerSettings;
+  pastRates: number[];
+  weightTons?: number | null;
+  urgency?: Urgency;
+  enquiryId?: string | null;
+}
+
+/** Build a full Quote object (status 'draft') from engine inputs. */
+export function draftQuote(inputs: DraftInputs): Quote {
+  const {
+    lane,
+    broker,
+    pastRates,
+    weightTons = null,
+    urgency = 'standard',
+    enquiryId = null,
+  } = inputs;
+  const breakdown = computeQuote({
+    lane,
+    dieselPrice: broker.dieselPrice,
+    marginPct: broker.defaultMarginPct,
+    urgency,
+    pastRates,
+  });
+  const now = new Date().toISOString();
+  return {
+    id: `q-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    brokerId: broker.id,
+    laneId: lane.id,
+    enquiryId,
+    weightTons,
+    urgency,
+    rateRs: breakdown.finalRate,
+    marginRs: breakdown.marginRs,
+    breakdown,
+    status: 'draft',
+    createdAt: now,
+    sentAt: null,
+  };
 }

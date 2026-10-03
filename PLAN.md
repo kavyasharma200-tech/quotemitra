@@ -1,4 +1,33 @@
-# QuoteMitra — MVP Plan
+# QuoteMitra — Plan
+
+## REBUILD (2026-10-04) — full-stack, anti-slop redesign
+
+The 1.0 MVP (below) was client-only with simulated WhatsApp. It has been rebuilt end-to-end:
+
+**New architecture** (zero-budget free tier):
+```
+browser ──▶ Vite SPA (src/) ──▶ /api/* (Vercel serverless, api/) ──▶ Supabase Postgres
+   │                                    │
+   │ fallback                           └── dev fallback: /tmp/quotemitra-dev.json
+   ▼                                         (when env vars absent)
+localStorage (demo mode — "Demo mode" badge in nav)
+```
+
+- **Frontend** (`src/`): all 7 views rebuilt from scratch to an opinionated design system — Fraunces display headlines with italic accents, IBM Plex Mono for every ₹ figure (tabular numbers), Manrope for UI; hairline dividers, zero card shadows, zero gradients; sage green as accent only. Signature details: stacked-bar cost breakdown, timeline inbox, dot-indicator status pills, trading-terminal dashboard. 22 hand-drawn SVG icons. All data via `src/lib/api.ts` → backend, with silent localStorage fallback.
+- **Backend** (`api/`): `GET/POST /api/webhooks/whatsapp` (Meta handshake + signature-validated inbound handler that creates enquiry → drafts quote → replies), `POST /api/whatsapp/send` (Graph API v21.0), CRUD `/api/lanes`, `/api/quotes`, `/api/enquiries`, `/api/settings`, `POST /api/quotes/draft` (server-side engine). Shared: `api/_lib/{db,quoteEngine,whatsapp,http,types}.ts`.
+- **Database** (`supabase/schema.sql`): `brokers`, `lanes`, `enquiries`, `quotes` + RLS (permissive MVP policies, TODO to scope by auth user).
+- **WhatsApp setup**: `WHATSAPP_SETUP.md` — free test number path (no business verification, 5 recipients), webhook URL, 4 Vercel env vars.
+- **Baileys bridge** (`tools/baileys-bridge/`, own package.json): QR-pair real personal number; unofficial, her choice, secondary number recommended.
+- **Contract note**: API uses `PATCH /api/<resource>` with `{id,...}` body and `DELETE /api/<resource>?id=` (frontend aligned). Enums: urgency `standard|urgent|same-day`; enquiry status `new|quoted|closed`; quote status `draft|sent|won|lost`.
+- **Verified**: `npm run build` passes; 10/10 API route tests + full inbound-webhook flow (enquiry→quoted, draft ₹2,700 on Bokaro→Dhanbad) green against compiled handlers.
+
+**Env vars needed**: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (server-only), `SUPABASE_ANON_KEY`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`.
+
+**Still simulated without creds**: WhatsApp send/receive (logged, never crashes); urgency detection from message text (drafts `standard`); no `wamid` dedupe; no API rate limiting.
+
+---
+
+# QuoteMitra — MVP Plan (1.0, superseded)
 
 **What it is:** A web app that simulates the full working flow of QuoteMitra — instant WhatsApp freight quotes for small Indian freight brokers. A broker receives an enquiry on WhatsApp, taps "Draft quote", gets a transparent, editable quote computed from their own lane history, and sends it back — all in under a minute.
 

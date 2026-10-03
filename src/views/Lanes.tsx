@@ -1,11 +1,15 @@
-import { useState } from 'react';
-import type { AppState, Lane, VehicleType } from '../types';
-import { Btn, EmptyState, Field, Modal } from '../components/ui';
-import { Icon } from '../components/Icon';
-import { formatINR } from '../lib/quoteEngine';
-import { uid } from '../lib/store';
+// Lanes — the lane book. Your rate history per lane is what every quote
+// is drafted from.
 
-const VEHICLES: VehicleType[] = [
+import { useState } from 'react';
+import type { DbData, LocalLane } from '../types';
+import { useDb } from '../lib/db';
+import { Btn, EmptyState, Field, Modal, Money } from '../components/ui';
+import { Icon } from '../components/Icon';
+import { uid } from '../lib/store';
+import { defaultMileageFor } from '../lib/quoteEngine';
+
+const VEHICLES = [
   '14ft Eicher (5T)',
   '17ft Eicher (7T)',
   '19ft Eicher (9T)',
@@ -14,178 +18,150 @@ const VEHICLES: VehicleType[] = [
   'Multi-Axle (25T)',
 ];
 
-const VEHICLE_DEFAULTS: Record<VehicleType, { capacityT: number; mileageKmpl: number }> = {
-  '14ft Eicher (5T)': { capacityT: 5, mileageKmpl: 7.5 },
-  '17ft Eicher (7T)': { capacityT: 7, mileageKmpl: 6.2 },
-  '19ft Eicher (9T)': { capacityT: 9, mileageKmpl: 5.5 },
-  '10-Wheeler (16T)': { capacityT: 16, mileageKmpl: 4.2 },
-  'Container 32ft (18T)': { capacityT: 18, mileageKmpl: 4.0 },
-  'Multi-Axle (25T)': { capacityT: 25, mileageKmpl: 3.6 },
-};
-
 function LaneForm({
   initial,
   onSave,
   onClose,
 }: {
-  initial?: Lane;
-  onSave: (lane: Lane) => void;
+  initial?: LocalLane;
+  onSave: (lane: LocalLane) => void;
   onClose: () => void;
 }) {
   const [origin, setOrigin] = useState(initial?.origin ?? '');
   const [destination, setDestination] = useState(initial?.destination ?? '');
   const [distanceKm, setDistanceKm] = useState(initial?.distanceKm ?? 100);
-  const [vehicleType, setVehicleType] = useState<VehicleType>(
-    initial?.vehicleType ?? '14ft Eicher (5T)',
+  const [vehicleType, setVehicleType] = useState(initial?.vehicleType ?? VEHICLES[0]);
+  const [mileageKmpl, setMileageKmpl] = useState(
+    initial?.mileageKmpl ?? defaultMileageFor(VEHICLES[0]),
   );
-  const [tollEstimate, setTollEstimate] = useState(initial?.tollEstimate ?? 400);
-  const [typicalRate, setTypicalRate] = useState(initial?.typicalRate ?? 6000);
+  const [tollRs, setTollRs] = useState(initial?.tollRs ?? 400);
+  const [typicalRateRs, setTypicalRateRs] = useState(initial?.typicalRateRs ?? 6000);
 
   const save = () => {
     if (!origin.trim() || !destination.trim() || distanceKm <= 0) return;
-    const def = VEHICLE_DEFAULTS[vehicleType];
     onSave({
       id: initial?.id ?? uid('lane'),
       origin: origin.trim(),
       destination: destination.trim(),
       distanceKm: Number(distanceKm),
       vehicleType,
-      capacityT: def.capacityT,
-      mileageKmpl: initial?.mileageKmpl ?? def.mileageKmpl,
-      tollEstimate: Number(tollEstimate),
-      typicalRate: Number(typicalRate),
-      lastRateAt: new Date().toISOString(),
+      mileageKmpl: Number(mileageKmpl) || 0,
+      tollRs: Number(tollRs) || 0,
+      typicalRateRs: Number(typicalRateRs) || 0,
+      createdAt: initial?.createdAt ?? new Date().toISOString(),
     });
   };
-
-  const input = (
-    value: string | number,
-    set: (v: string) => void,
-    type = 'text',
-  ) => (
-    <input
-      type={type}
-      value={value}
-      onChange={(e) => set(e.target.value)}
-    />
-  );
 
   return (
     <Modal title={initial ? 'Edit lane' : 'Add lane'} onClose={onClose}>
       <div className="form-grid">
-        <Field label="Origin">{input(origin, setOrigin)}</Field>
-        <Field label="Destination">{input(destination, setDestination)}</Field>
+        <Field label="Origin">
+          <input value={origin} onChange={(e) => setOrigin(e.target.value)} placeholder="Bokaro" />
+        </Field>
+        <Field label="Destination">
+          <input value={destination} onChange={(e) => setDestination(e.target.value)} placeholder="Dhanbad" />
+        </Field>
         <Field label="Distance (km)">
-          {input(String(distanceKm), (v) => setDistanceKm(Number(v) || 0), 'number')}
+          <input type="number" min={1} value={distanceKm} onChange={(e) => setDistanceKm(Number(e.target.value) || 0)} />
         </Field>
         <Field label="Vehicle">
-          <select value={vehicleType} onChange={(e) => setVehicleType(e.target.value as VehicleType)}>
+          <select
+            value={vehicleType}
+            onChange={(e) => {
+              setVehicleType(e.target.value);
+              if (!initial) setMileageKmpl(defaultMileageFor(e.target.value));
+            }}
+          >
             {VEHICLES.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
+              <option key={v} value={v}>{v}</option>
             ))}
           </select>
         </Field>
+        <Field label="Mileage (km/l)" hint="Fuel math uses this">
+          <input type="number" min={0} step={0.1} value={mileageKmpl} onChange={(e) => setMileageKmpl(Number(e.target.value) || 0)} />
+        </Field>
         <Field label="Toll estimate (₹)" hint="FASTag total for the lane">
-          {input(String(tollEstimate), (v) => setTollEstimate(Number(v) || 0), 'number')}
+          <input type="number" min={0} step={10} value={tollRs} onChange={(e) => setTollRs(Number(e.target.value) || 0)} />
         </Field>
         <Field label="Typical rate (₹)" hint="What this lane usually goes for">
-          {input(String(typicalRate), (v) => setTypicalRate(Number(v) || 0), 'number')}
+          <input type="number" min={0} step={100} value={typicalRateRs} onChange={(e) => setTypicalRateRs(Number(e.target.value) || 0)} />
         </Field>
       </div>
       <div className="modal-actions">
-        <Btn variant="secondary" onClick={onClose}>
-          Cancel
-        </Btn>
-        <Btn onClick={save} icon="check">
-          Save lane
-        </Btn>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={save} icon="check">Save lane</Btn>
       </div>
     </Modal>
   );
 }
 
-export function Lanes({
-  state,
-  onChange,
-}: {
-  state: AppState;
-  onChange: (s: AppState) => void;
-}) {
-  const [editing, setEditing] = useState<Lane | 'new' | null>(null);
+export function Lanes({ db }: { db: DbData }) {
+  const { addLane, updateLane, removeLane } = useDb();
+  const [editing, setEditing] = useState<LocalLane | 'new' | null>(null);
 
-  const save = (lane: Lane) => {
-    const exists = state.lanes.some((l) => l.id === lane.id);
-    onChange({
-      ...state,
-      lanes: exists
-        ? state.lanes.map((l) => (l.id === lane.id ? lane : l))
-        : [...state.lanes, lane],
-    });
+  const save = (lane: LocalLane) => {
+    const exists = db.lanes.some((l) => l.id === lane.id);
+    void (exists ? updateLane(lane) : addLane(lane));
     setEditing(null);
   };
 
   const remove = (id: string) => {
     if (!window.confirm('Delete this lane? Past quotes keep their records.')) return;
-    onChange({ ...state, lanes: state.lanes.filter((l) => l.id !== id) });
+    void removeLane(id);
   };
 
   return (
     <div className="page">
       <div className="page-head">
         <div>
+          <p className="kicker small">Rate history</p>
           <h2>Lane book</h2>
-          <p className="muted">
-            Your rate history per lane — this is what every quote is drafted from.
-          </p>
+          <p className="muted fine">Your rate history per lane — this is what every quote is drafted from.</p>
         </div>
         <Btn icon="plus" onClick={() => setEditing('new')}>
           Add lane
         </Btn>
       </div>
 
-      {state.lanes.length === 0 ? (
+      {db.lanes.length === 0 ? (
         <EmptyState
           icon="route"
           title="No lanes yet"
           text="Add the routes you run most. Quotes get smarter as your lane book grows."
         />
       ) : (
-        <div className="lane-grid">
-          {state.lanes.map((l) => (
-            <div className="card lane-card" key={l.id}>
-              <div className="lane-top">
-                <h3>
-                  {l.origin} <Icon name="arrowRight" size={14} /> {l.destination}
-                </h3>
-                <span className="lane-actions">
-                  <button className="icon-btn" onClick={() => setEditing(l)} aria-label="Edit lane">
-                    <Icon name="pencil" size={16} />
-                  </button>
-                  <button className="icon-btn danger" onClick={() => remove(l.id)} aria-label="Delete lane">
-                    <Icon name="x" size={16} />
-                  </button>
-                </span>
-              </div>
-              <div className="lane-meta">
-                <span>
-                  <Icon name="truck" size={14} /> {l.vehicleType}
-                </span>
-                <span>
-                  <Icon name="route" size={14} /> {l.distanceKm} km
-                </span>
-              </div>
-              <div className="lane-rate">
-                <span className="muted">Typical rate</span>
-                <strong>{formatINR(l.typicalRate)}</strong>
-              </div>
-              <div className="lane-foot muted">
-                Toll ≈ {formatINR(l.tollEstimate)} · {l.mileageKmpl} km/l
-              </div>
-            </div>
-          ))}
-        </div>
+        <ul className="lane-list">
+          {db.lanes.map((l) => {
+            const quotes = db.quotes.filter((q) => q.laneId === l.id);
+            return (
+              <li key={l.id} className="lane-row">
+                <div className="lane-main">
+                  <h3>
+                    {l.origin} <Icon name="arrowR" size={14} className="inline-icon" /> {l.destination}
+                  </h3>
+                  <p className="muted fine">
+                    {l.vehicleType} · {l.distanceKm} km · {l.mileageKmpl > 0 ? `${l.mileageKmpl} km/l` : 'mileage n/a'} · toll <Money value={l.tollRs} className="inline" />
+                    {quotes.length > 0 && ` · ${quotes.length} quote${quotes.length > 1 ? 's' : ''} on record`}
+                  </p>
+                </div>
+                <div className="lane-side">
+                  <div className="lane-rate">
+                    <span className="muted fine">Typical rate</span>
+                    <Money value={l.typicalRateRs} className="lane-rate-num" />
+                  </div>
+                  <span className="lane-actions">
+                    <button className="icon-btn" onClick={() => setEditing(l)} aria-label={`Edit ${l.origin} to ${l.destination}`}>
+                      <Icon name="pencil" size={15} />
+                    </button>
+                    <button className="icon-btn danger" onClick={() => remove(l.id)} aria-label={`Delete ${l.origin} to ${l.destination}`}>
+                      <Icon name="x" size={15} />
+                    </button>
+                  </span>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       )}
 
       {editing && (
